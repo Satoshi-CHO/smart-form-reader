@@ -28,7 +28,7 @@
 
 ### 1. リポジトリのクローン
 ```bash
-git clone https://github.com/your-username/smart-form-reader.git
+git clone https://github.com/Satoshi-CHO/smart-form-reader.git
 cd smart-form-reader
 ```
 

@@ -29,7 +29,7 @@ As such, it serves as a highly extensible template for OCR systems, as well as a
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/your-username/smart-form-reader.git
+git clone https://github.com/Satoshi-CHO/smart-form-reader.git
 cd smart-form-reader
 ```
 
