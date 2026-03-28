@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+env/
+.env/
+
+# Test / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+test_workspace/
+test_workspace_components/
+test_workspace_refactored/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Application Specific Data / User Settings
+# 基本のディレクトリは保持しつつ、中のファイルは除外（.gitkeepは除外対象から外す）
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+
+# マスク画像とテンプレート関連は教材・サンプルとして保持するため無視しない
+
+
+# ユーザー固有の設定ファイル
+settings.json
+
+# OCR Engine Caches (EasyOCR等モデルダウンロード先)
+.EasyOCR/

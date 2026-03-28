@@ -1,0 +1,29 @@
+[
+    {
+        "id": "digits_number",
+        "type": "digits",
+        "x": 75,
+        "y": 135,
+        "w": 560,
+        "h": 82,
+        "expected_length": 8
+    },
+    {
+        "id": "string_q1",
+        "type": "text",
+        "x": 69,
+        "y": 293,
+        "w": 1145,
+        "h": 248,
+        "expected_length": 0
+    },
+    {
+        "id": "string_q2",
+        "type": "text",
+        "x": 69,
+        "y": 599,
+        "w": 1054,
+        "h": 246,
+        "expected_length": 0
+    }
+]
