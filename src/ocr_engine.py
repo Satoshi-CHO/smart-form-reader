@@ -60,17 +60,42 @@ class IOcrStrategy(ABC):
 
 
 class EasyOcrDigitStrategy(IOcrStrategy):
-    def __init__(self, use_gpu: bool = True):
+    def __init__(
+        self,
+        use_gpu: bool = True,
+        threshold_value: int = 140,
+        kernel_size: int = 2,
+        morphology_iterations: int = 1,
+    ):
         import easyocr
 
         logging.info("Initializing EasyOCR for digits...")
         model_dir, user_network_dir = get_easyocr_directories()
+        self.threshold_value = threshold_value
+        self.kernel_size = max(1, int(kernel_size))
+        self.morphology_iterations = max(0, int(morphology_iterations))
         self.reader = easyocr.Reader(
             ["en"],
             gpu=use_gpu,
             model_storage_directory=model_dir,
             user_network_directory=user_network_dir,
         )
+
+    def _preprocess_digit_image(self, image: np.ndarray) -> np.ndarray:
+        # Treat dark handwritten strokes as foreground so morphology can thin them.
+        _, binary = cv2.threshold(image, self.threshold_value, 255, cv2.THRESH_BINARY_INV)
+        kernel = np.ones((self.kernel_size, self.kernel_size), dtype=np.uint8)
+        if self.morphology_iterations > 0:
+            cleaned = cv2.morphologyEx(
+                binary,
+                cv2.MORPH_OPEN,
+                kernel,
+                iterations=self.morphology_iterations,
+            )
+            thinned = cv2.erode(cleaned, kernel, iterations=self.morphology_iterations)
+        else:
+            thinned = binary
+        return cv2.bitwise_not(thinned)
 
     def warmup(self):
         logging.info("Warming up DigitStrategy...")
@@ -87,7 +112,7 @@ class EasyOcrDigitStrategy(IOcrStrategy):
         if len(image.shape) == 3:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        _, processed = cv2.threshold(image, 140, 255, cv2.THRESH_BINARY)
+        processed = self._preprocess_digit_image(image)
         res = self.reader.readtext(processed, allowlist="0123456789")
         result_text = "".join([r[1] for r in res])
 
@@ -227,13 +252,36 @@ class OcrEngineFactory:
         return EasyOcrTextStrategy(use_gpu)
 
     @staticmethod
-    def create_digit_engine(use_gpu: bool = True) -> IOcrStrategy:
-        return EasyOcrDigitStrategy(use_gpu)
+    def create_digit_engine(
+        use_gpu: bool = True,
+        digit_threshold: int = 140,
+        digit_kernel_size: int = 2,
+        digit_morphology_iterations: int = 1,
+    ) -> IOcrStrategy:
+        return EasyOcrDigitStrategy(
+            use_gpu,
+            threshold_value=digit_threshold,
+            kernel_size=digit_kernel_size,
+            morphology_iterations=digit_morphology_iterations,
+        )
 
 
 class OCREngine:
-    def __init__(self, use_gpu: bool = True, text_engine: str = "EasyOCR", ndlocr_command: str = ""):
-        self.digit_reader: IOcrStrategy = OcrEngineFactory.create_digit_engine(use_gpu)
+    def __init__(
+        self,
+        use_gpu: bool = True,
+        text_engine: str = "EasyOCR",
+        ndlocr_command: str = "",
+        digit_threshold: int = 140,
+        digit_kernel_size: int = 2,
+        digit_morphology_iterations: int = 1,
+    ):
+        self.digit_reader: IOcrStrategy = OcrEngineFactory.create_digit_engine(
+            use_gpu,
+            digit_threshold,
+            digit_kernel_size,
+            digit_morphology_iterations,
+        )
         self.text_reader: IOcrStrategy = OcrEngineFactory.create_text_engine(text_engine, use_gpu, ndlocr_command)
 
     def warmup(self):

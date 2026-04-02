@@ -8,8 +8,10 @@ from tkinter import ttk, filedialog, messagebox
 import threading
 import json
 import cv2
+import numpy as np
 import subprocess
 import sys
+import base64
 
 
 def get_managed_ndlocr_command(base_dir):
@@ -51,6 +53,10 @@ class OCRApp:
                 "output_dir": "Output Dir:",
                 "template": "Template Image:",
                 "use_gpu": "Use GPU Acceleration (if available)",
+                "digit_threshold": "Digit Threshold:",
+                "adjust_threshold": "Adjust Threshold",
+                "digit_kernel": "Kernel Size:",
+                "digit_iterations": "Iterations:",
                 "enable_text_ocr": "Enable Text OCR",
                 "text_engine": "Text OCR Engine:",
                 "ndlocr_command": "NDLOCR-Lite Command:",
@@ -109,6 +115,10 @@ class OCRApp:
         self.masks_dir = tk.StringVar(value=os.path.join(self.base_dir, "masks"))
 
         self.use_gpu = tk.BooleanVar(value=self.app_config.get("use_gpu", True))
+        self.digit_threshold_var = tk.IntVar(value=self.app_config.get("digit_threshold", 140))
+        self.digit_kernel_size_var = tk.IntVar(value=self.app_config.get("digit_kernel_size", 2))
+        self.digit_morphology_iterations_var = tk.IntVar(value=self.app_config.get("digit_morphology_iterations", 1))
+        self.digit_preprocess_summary_var = tk.StringVar()
         self.enable_text_ocr = tk.BooleanVar(value=self.app_config.get("enable_text_ocr", False))
         self.text_engine_var = tk.StringVar(value=self.app_config.get("text_engine", "EasyOCR"))
         managed_ndlocr_command = get_managed_ndlocr_command(self.base_dir)
@@ -124,12 +134,20 @@ class OCRApp:
     def save_settings(self):
         self.app_config["language"] = self.lang
         self.app_config["use_gpu"] = self.use_gpu.get()
+        self.app_config["digit_threshold"] = self.digit_threshold_var.get()
+        self.app_config["digit_kernel_size"] = self.digit_kernel_size_var.get()
+        self.app_config["digit_morphology_iterations"] = self.digit_morphology_iterations_var.get()
         self.app_config["enable_text_ocr"] = self.enable_text_ocr.get()
         self.app_config["text_engine"] = self.text_engine_var.get()
         self.app_config["ndlocr_command"] = self.ndlocr_command_var.get()
         self.app_config.pop("ndlocr_path", None)
         with open(self.settings_path, "w", encoding="utf-8") as f:
             json.dump(self.app_config, f, indent=4)
+
+    def update_digit_preprocess_summary(self):
+        self.digit_preprocess_summary_var.set(
+            f"T:{self.digit_threshold_var.get()} K:{self.digit_kernel_size_var.get()} I:{self.digit_morphology_iterations_var.get()}"
+        )
 
     def t(self, key):
         return self.strings[self.lang].get(key, key)
@@ -226,6 +244,26 @@ class OCRApp:
         chk_gpu = ttk.Checkbutton(row_gpu, text=self.t("use_gpu"), variable=self.use_gpu, command=self.save_settings)
         chk_gpu.pack(side=tk.LEFT, padx=5)
         self.track(chk_gpu, "use_gpu")
+
+        row_digit_threshold = ttk.Frame(self.path_frame)
+        row_digit_threshold.pack(fill=tk.X, pady=2)
+        lbl_digit_threshold = ttk.Label(row_digit_threshold, text=self.t("digit_threshold"))
+        lbl_digit_threshold.pack(side=tk.LEFT, padx=5)
+        self.track(lbl_digit_threshold, "digit_threshold")
+        self.update_digit_preprocess_summary()
+        self.digit_threshold_label = ttk.Label(
+            row_digit_threshold,
+            textvariable=self.digit_preprocess_summary_var,
+            width=18,
+        )
+        self.digit_threshold_label.pack(side=tk.LEFT, padx=5)
+        self.adjust_threshold_btn = ttk.Button(
+            row_digit_threshold,
+            text=self.t("adjust_threshold"),
+            command=self.open_digit_threshold_window
+        )
+        self.adjust_threshold_btn.pack(side=tk.LEFT, padx=5)
+        self.track(self.adjust_threshold_btn, "adjust_threshold")
 
         row_text_toggle = ttk.Frame(self.path_frame)
         row_text_toggle.pack(fill=tk.X, pady=2)
@@ -566,6 +604,175 @@ class OCRApp:
         btn = ttk.Button(top, text="Save Region", command=save)
         btn.pack(pady=10)
 
+    def get_digit_preview_image(self):
+        intermediate_dir = os.path.join(self.output_dir.get(), "intermediate")
+        if os.path.isdir(intermediate_dir):
+            candidates = sorted(
+                [
+                    os.path.join(intermediate_dir, name)
+                    for name in os.listdir(intermediate_dir)
+                    if "digits_number" in name and name.lower().endswith((".png", ".jpg", ".jpeg"))
+                ],
+                key=os.path.getmtime,
+                reverse=True,
+            )
+            for candidate in candidates:
+                img = cv2.imread(candidate, cv2.IMREAD_GRAYSCALE)
+                if img is not None:
+                    return img, candidate
+
+        masks_path = os.path.join(self.masks_dir.get(), "config.json")
+        if not os.path.exists(self.template_path.get()) or not os.path.exists(masks_path):
+            return None, ""
+
+        template_img = cv2.imread(self.template_path.get(), cv2.IMREAD_GRAYSCALE)
+        if template_img is None:
+            return None, ""
+
+        with open(masks_path, "r", encoding="utf-8") as f:
+            masks = json.load(f)
+
+        digit_mask = next((mask for mask in masks if mask.get("type") == "digits"), None)
+        if not digit_mask:
+            return None, ""
+
+        x, y, w, h = digit_mask.get("x", 0), digit_mask.get("y", 0), digit_mask.get("w", 0), digit_mask.get("h", 0)
+        preview = template_img[y:y + h, x:x + w]
+        if preview.size == 0:
+            return None, ""
+        return preview, self.template_path.get()
+
+    def preprocess_digit_preview(self, image, threshold_value, kernel_size, morphology_iterations):
+        _, binary = cv2.threshold(image, threshold_value, 255, cv2.THRESH_BINARY_INV)
+        kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
+        if morphology_iterations > 0:
+            binary = cv2.morphologyEx(
+                binary,
+                cv2.MORPH_OPEN,
+                kernel,
+                iterations=morphology_iterations,
+            )
+            binary = cv2.erode(binary, kernel, iterations=morphology_iterations)
+        return cv2.bitwise_not(binary)
+
+    def render_threshold_preview(self, image, threshold_value, kernel_size, morphology_iterations):
+        processed = self.preprocess_digit_preview(
+            image,
+            threshold_value,
+            kernel_size,
+            morphology_iterations,
+        )
+        combined = np.hstack([image, processed])
+        combined_rgb = cv2.cvtColor(combined, cv2.COLOR_GRAY2RGB)
+        max_width = 900
+        if combined_rgb.shape[1] > max_width:
+            scale = max_width / combined_rgb.shape[1]
+            combined_rgb = cv2.resize(
+                combined_rgb,
+                (int(combined_rgb.shape[1] * scale), int(combined_rgb.shape[0] * scale)),
+                interpolation=cv2.INTER_AREA,
+            )
+
+        success, buffer = cv2.imencode(".png", cv2.cvtColor(combined_rgb, cv2.COLOR_RGB2BGR))
+        if not success:
+            return None
+        return tk.PhotoImage(data=base64.b64encode(buffer).decode("utf-8"))
+
+    def open_digit_threshold_window(self):
+        preview_image, preview_source = self.get_digit_preview_image()
+        if preview_image is None:
+            messagebox.showwarning("Warning", "No digit preview image found.")
+            return
+
+        top = tk.Toplevel(self.root)
+        top.title("Digit Threshold")
+        top.geometry("980x520")
+        top.transient(self.root)
+
+        source_label = ttk.Label(top, text=f"Preview Source: {preview_source}")
+        source_label.pack(anchor=tk.W, padx=10, pady=(10, 5))
+
+        value_var = tk.IntVar(value=self.digit_threshold_var.get())
+        kernel_var = tk.IntVar(value=self.digit_kernel_size_var.get())
+        iterations_var = tk.IntVar(value=self.digit_morphology_iterations_var.get())
+        current_value_label = ttk.Label(
+            top,
+            text=f"Threshold: {value_var.get()}  Kernel: {kernel_var.get()}  Iterations: {iterations_var.get()}",
+        )
+        current_value_label.pack(anchor=tk.W, padx=10)
+
+        image_label = ttk.Label(top)
+        image_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        def update_preview(*_args):
+            current_value_label.config(
+                text=f"Threshold: {value_var.get()}  Kernel: {kernel_var.get()}  Iterations: {iterations_var.get()}"
+            )
+            photo = self.render_threshold_preview(
+                preview_image,
+                value_var.get(),
+                kernel_var.get(),
+                iterations_var.get(),
+            )
+            if photo is not None:
+                image_label.configure(image=photo)
+                image_label.image = photo
+
+        control_frame = ttk.Frame(top)
+        control_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        ttk.Label(control_frame, text="Threshold").pack(anchor=tk.W)
+        threshold_slider = tk.Scale(
+            control_frame,
+            from_=0,
+            to=255,
+            orient=tk.HORIZONTAL,
+            resolution=1,
+            variable=value_var,
+            command=update_preview,
+        )
+        threshold_slider.pack(fill=tk.X)
+
+        ttk.Label(control_frame, text="Kernel Size").pack(anchor=tk.W)
+        kernel_slider = tk.Scale(
+            control_frame,
+            from_=1,
+            to=5,
+            orient=tk.HORIZONTAL,
+            resolution=1,
+            variable=kernel_var,
+            command=update_preview,
+        )
+        kernel_slider.pack(fill=tk.X)
+
+        ttk.Label(control_frame, text="Iterations").pack(anchor=tk.W)
+        iterations_slider = tk.Scale(
+            control_frame,
+            from_=0,
+            to=5,
+            orient=tk.HORIZONTAL,
+            resolution=1,
+            variable=iterations_var,
+            command=update_preview,
+        )
+        iterations_slider.pack(fill=tk.X)
+
+        button_frame = ttk.Frame(top)
+        button_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+
+        def apply_threshold():
+            self.digit_threshold_var.set(value_var.get())
+            self.digit_kernel_size_var.set(kernel_var.get())
+            self.digit_morphology_iterations_var.set(iterations_var.get())
+            self.update_digit_preprocess_summary()
+            self.save_settings()
+            top.destroy()
+
+        ttk.Button(button_frame, text="OK", command=apply_threshold).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=top.destroy).pack(side=tk.RIGHT, padx=5)
+
+        update_preview()
+
     def log(self, message):
         self.root.after(0, self._log_ui, message)
         
@@ -673,13 +880,23 @@ class OCRApp:
             return
             
         use_gpu = self.use_gpu.get()
+        digit_threshold = self.digit_threshold_var.get()
+        digit_kernel_size = self.digit_kernel_size_var.get()
+        digit_morphology_iterations = self.digit_morphology_iterations_var.get()
         enable_text_ocr = self.enable_text_ocr.get()
         text_engine = self.text_engine_var.get()
         ndlocr_command = self.build_ndlocr_command()
         
         self.log("Initializing ImageProcessor and OCREngine...")
         image_processor = ImageProcessor(template_path, masks_path)
-        ocr_engine = OCREngine(use_gpu=use_gpu, text_engine=text_engine, ndlocr_command=ndlocr_command)
+        ocr_engine = OCREngine(
+            use_gpu=use_gpu,
+            text_engine=text_engine,
+            ndlocr_command=ndlocr_command,
+            digit_threshold=digit_threshold,
+            digit_kernel_size=digit_kernel_size,
+            digit_morphology_iterations=digit_morphology_iterations,
+        )
         
         self.log("Warming up OCR engines...")
         ocr_engine.warmup()
