@@ -37,4 +37,5 @@ output/*
 settings.json
 
 # OCR Engine Caches (EasyOCR等モデルダウンロード先)
-.EasyOCR/
+.cache/
+.tools/

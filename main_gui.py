@@ -8,6 +8,21 @@ from tkinter import ttk, filedialog, messagebox
 import threading
 import json
 import cv2
+import subprocess
+import sys
+
+
+def get_managed_ndlocr_command(base_dir):
+    tools_root = os.path.join(base_dir, ".tools", "ndlocr-lite")
+    repo_dir = os.path.join(tools_root, "repo", "src", "ocr.py")
+    if os.name == "nt":
+        python_path = os.path.join(tools_root, "venv", "Scripts", "python.exe")
+    else:
+        python_path = os.path.join(tools_root, "venv", "bin", "python")
+
+    if os.path.exists(python_path) and os.path.exists(repo_dir):
+        return f'"{python_path}" "{repo_dir}" --sourceimg "{{input}}" --output "{{output}}"'
+    return ""
 
 class OCRApp:
     def __init__(self, root):
@@ -36,7 +51,10 @@ class OCRApp:
                 "output_dir": "Output Dir:",
                 "template": "Template Image:",
                 "use_gpu": "Use GPU Acceleration (if available)",
+                "enable_text_ocr": "Enable Text OCR",
                 "text_engine": "Text OCR Engine:",
+                "ndlocr_command": "NDLOCR-Lite Command:",
+                "install_ndlocr": "Install NDLOCR-Lite",
                 "masks_dir": "Masks Directory:",
                 "browse": "Browse",
                 "mask_frame": "Mask Settings",
@@ -91,14 +109,25 @@ class OCRApp:
         self.masks_dir = tk.StringVar(value=os.path.join(self.base_dir, "masks"))
 
         self.use_gpu = tk.BooleanVar(value=self.app_config.get("use_gpu", True))
-        self.text_engine_var = tk.StringVar(value=self.app_config.get("text_engine", "MangaOCR"))
+        self.enable_text_ocr = tk.BooleanVar(value=self.app_config.get("enable_text_ocr", False))
+        self.text_engine_var = tk.StringVar(value=self.app_config.get("text_engine", "EasyOCR"))
+        managed_ndlocr_command = get_managed_ndlocr_command(self.base_dir)
+        self.ndlocr_command_var = tk.StringVar(
+            value=managed_ndlocr_command or self.app_config.get(
+                "ndlocr_command",
+                'ndlocr-lite --input "{input}" --output "{output}"'
+            )
+        )
         
         self.create_widgets()
 
     def save_settings(self):
         self.app_config["language"] = self.lang
         self.app_config["use_gpu"] = self.use_gpu.get()
+        self.app_config["enable_text_ocr"] = self.enable_text_ocr.get()
         self.app_config["text_engine"] = self.text_engine_var.get()
+        self.app_config["ndlocr_command"] = self.ndlocr_command_var.get()
+        self.app_config.pop("ndlocr_path", None)
         with open(self.settings_path, "w", encoding="utf-8") as f:
             json.dump(self.app_config, f, indent=4)
 
@@ -198,15 +227,38 @@ class OCRApp:
         chk_gpu.pack(side=tk.LEFT, padx=5)
         self.track(chk_gpu, "use_gpu")
 
+        row_text_toggle = ttk.Frame(self.path_frame)
+        row_text_toggle.pack(fill=tk.X, pady=2)
+        chk_text_ocr = ttk.Checkbutton(
+            row_text_toggle,
+            text=self.t("enable_text_ocr"),
+            variable=self.enable_text_ocr,
+            command=self.on_toggle_text_ocr
+        )
+        chk_text_ocr.pack(side=tk.LEFT, padx=5)
+        self.track(chk_text_ocr, "enable_text_ocr")
+
         # Text Engine Dropdown
         row_engine = ttk.Frame(self.path_frame)
         row_engine.pack(fill=tk.X, pady=2)
         lbl_engine = ttk.Label(row_engine, text=self.t("text_engine"))
         lbl_engine.pack(side=tk.LEFT, padx=5)
         self.track(lbl_engine, "text_engine")
-        engine_cb = ttk.Combobox(row_engine, textvariable=self.text_engine_var, values=["MangaOCR", "EasyOCR"], state="readonly", width=15)
-        engine_cb.pack(side=tk.LEFT, padx=5)
-        engine_cb.bind("<<ComboboxSelected>>", lambda e: self.save_settings())
+        self.engine_cb = ttk.Combobox(row_engine, textvariable=self.text_engine_var, values=["EasyOCR", "NDLOCR-Lite"], state="readonly", width=15)
+        self.engine_cb.pack(side=tk.LEFT, padx=5)
+        self.engine_cb.bind("<<ComboboxSelected>>", lambda e: self.save_settings())
+
+        row_ndlocr = ttk.Frame(self.path_frame)
+        row_ndlocr.pack(fill=tk.X, pady=2)
+        lbl_ndlocr = ttk.Label(row_ndlocr, text=self.t("ndlocr_command"))
+        lbl_ndlocr.pack(side=tk.LEFT, padx=5)
+        self.track(lbl_ndlocr, "ndlocr_command")
+        self.entry_ndlocr = ttk.Entry(row_ndlocr, textvariable=self.ndlocr_command_var, width=60)
+        self.entry_ndlocr.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+        self.entry_ndlocr.bind("<FocusOut>", lambda e: self.save_settings())
+        self.install_ndlocr_btn = ttk.Button(row_ndlocr, text=self.t("install_ndlocr"), command=self.install_ndlocr_lite)
+        self.install_ndlocr_btn.pack(side=tk.LEFT, padx=5)
+        self.track(self.install_ndlocr_btn, "install_ndlocr")
         
         # 2. Mask settings table
         self.mask_frame = ttk.LabelFrame(self.root, text=self.t("mask_frame"))
@@ -268,6 +320,7 @@ class OCRApp:
         self.track(btn, "update_row")
         
         self.load_config()
+        self.update_text_ocr_controls()
         
         # 3. Execution Log
         self.log_frame = ttk.LabelFrame(self.root, text=self.t("log_frame"))
@@ -527,6 +580,49 @@ class OCRApp:
         self.start_btn.config(state=tk.DISABLED)
         threading.Thread(target=self.run_pipeline_thread, daemon=True).start()
 
+    def on_toggle_text_ocr(self):
+        self.update_text_ocr_controls()
+        self.save_settings()
+
+    def update_text_ocr_controls(self):
+        state = "readonly" if self.enable_text_ocr.get() else "disabled"
+        entry_state = "normal" if self.enable_text_ocr.get() else "disabled"
+        button_state = "normal" if self.enable_text_ocr.get() else "disabled"
+        self.engine_cb.config(state=state)
+        self.entry_ndlocr.config(state=entry_state)
+        self.install_ndlocr_btn.config(state=button_state)
+
+    def install_ndlocr_lite(self):
+        self.log("Installing NDLOCR-Lite...")
+        self.install_ndlocr_btn.config(state=tk.DISABLED)
+
+        def worker():
+            try:
+                completed = subprocess.run(
+                    [sys.executable, "setup_env.py", "--install-ndlocr-lite"],
+                    cwd=self.base_dir,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=1800000,
+                )
+                managed_command = get_managed_ndlocr_command(self.base_dir)
+                if managed_command:
+                    self.ndlocr_command_var.set(managed_command)
+                    self.save_settings()
+                output = (completed.stdout or "").strip()
+                if output:
+                    self.log(output)
+                self.log("NDLOCR-Lite installation completed.")
+            except subprocess.CalledProcessError as exc:
+                self.log(f"NDLOCR-Lite installation failed.\n{exc.stdout}\n{exc.stderr}")
+            except Exception as exc:
+                self.log(f"NDLOCR-Lite installation error: {exc}")
+            finally:
+                self.root.after(0, self.update_text_ocr_controls)
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def run_pipeline_thread(self):
         try:
             self._run_pipeline_logic()
@@ -577,11 +673,13 @@ class OCRApp:
             return
             
         use_gpu = self.use_gpu.get()
+        enable_text_ocr = self.enable_text_ocr.get()
         text_engine = self.text_engine_var.get()
+        ndlocr_command = self.build_ndlocr_command()
         
         self.log("Initializing ImageProcessor and OCREngine...")
         image_processor = ImageProcessor(template_path, masks_path)
-        ocr_engine = OCREngine(use_gpu=use_gpu, text_engine=text_engine)
+        ocr_engine = OCREngine(use_gpu=use_gpu, text_engine=text_engine, ndlocr_command=ndlocr_command)
         
         self.log("Warming up OCR engines...")
         ocr_engine.warmup()
@@ -610,6 +708,11 @@ class OCRApp:
             
             file_data = {"file_name": file_name, "results": []}
             for roi in roi_infos:
+                if roi.get("type") != "digits" and not enable_text_ocr:
+                    file_data["results"].append({
+                        "roi_id": roi['roi_id'], "raw_text": ""
+                    })
+                    continue
                 ocr_res = ocr_engine.process_roi(roi)
                 if ocr_res["error_flags"]:
                     self.log(f"  -> ROI Validation Warning on {roi['roi_id']}: {ocr_res['error_flags']}")
@@ -634,6 +737,12 @@ class OCRApp:
             json.dump(final_results, f, ensure_ascii=False, indent=4)
             
         self.log("Processing completed successfully. See raw output at output/ directory.")
+
+    def build_ndlocr_command(self):
+        managed_command = get_managed_ndlocr_command(self.base_dir)
+        if managed_command:
+            return managed_command
+        return self.ndlocr_command_var.get()
 
 if __name__ == "__main__":
     root = tk.Tk()

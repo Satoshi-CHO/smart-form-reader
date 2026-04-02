@@ -34,7 +34,7 @@ cd smart-form-reader
 ```
 
 ### 2. Environment Setup
-Running the provided batch or shell scripts will automatically create a virtual environment (`venv`) and install the necessary dependencies (`torch`, `easyocr`, `manga-ocr`, `opencv-python`, etc.).
+Running the provided batch or shell scripts will automatically create a virtual environment (`venv`) and install the necessary dependencies (`torch`, `easyocr`, `opencv-python`, etc.).
 
 * **Windows:**
   ```cmd

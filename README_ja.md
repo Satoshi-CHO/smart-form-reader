@@ -33,7 +33,7 @@ cd smart-form-reader
 ```
 
 ### 2. 環境構築
-付属のバッチファイルまたはシェルスクリプトを実行すると、自動で仮想環境 (`venv`) の作成と、必要なライブラリ(`torch`, `easyocr`, `manga-ocr`, `opencv-python` 等) のインストールが行われます。
+付属のバッチファイルまたはシェルスクリプトを実行すると、自動で仮想環境 (`venv`) の作成と、必要なライブラリ(`torch`, `easyocr`, `opencv-python` 等) のインストールが行われます。
 
 * **Windows の場合:**
   ```cmd
